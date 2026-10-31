@@ -16,10 +16,6 @@
   <img src="x-banner.jpg" alt="Banner" width="100%"/>
 </p>
 
-<p align="center">
-  <img src="og.jpg" alt="Preview" width="680"/>
-</p>
-
 ---
 
 ## ✨ What it does
@@ -155,6 +151,9 @@ Use engine help only in offline / vs-computer / explicitly allowed games.
 ```
 
 ---
+<p align="center">
+  <img src="og.jpg" alt="Preview" width="680"/>
+</p>
 
 ## 📄 License
 
