@@ -1,0 +1,29 @@
+# ChessAI Overlay LIVE - Dependencies
+# Python 3.10+ recommended
+
+# GUI Framework
+PySide6>=6.6.0
+
+# Computer Vision & Screen Capture
+opencv-python>=4.8.0
+numpy>=1.24.0
+mss>=9.0.1
+Pillow>=10.0.0
+
+# Chess Logic
+python-chess>=1.10.0
+
+# Utilities
+pynput>=1.7.6          # Hotkeys
+pywin32>=306; sys_platform == 'win32'  # Windows-specific (always-on-top, etc.)
+darkdetect>=0.8.0      # System theme detection (optional)
+
+# Packaging (for building executable)
+# pyinstaller>=6.0.0
+
+# Testing
+pytest>=7.4.0
+pytest-qt>=4.2.0
+
+# Optional OCR for move list
+pytesseract>=0.3.10
