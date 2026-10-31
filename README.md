@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="favicon.png" alt="Logo" width="110"/>
-</p>
-
 <h1 align="center">♟️ ChessAI Overlay LIVE</h1>
 
 <p align="center">
