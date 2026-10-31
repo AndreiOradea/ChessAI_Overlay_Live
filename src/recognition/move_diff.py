@@ -21,8 +21,7 @@ EMPTY, WHITE, BLACK = 0, 1, 2
 
 # Frames the board must stay identical before we accept a move
 STABLE_FRAMES_REQUIRED = 2
-BLACK_PIECE_DARK_FRACTION = 0.39
-CHROMATIC_DARK_SQUARE_BLACK_PIECE_DARK_FRACTION = 0.45
+PIECE_COLOR_LUMINANCE_THRESHOLD = 60
 
 
 class MoveDiffTracker:
@@ -87,15 +86,20 @@ class MoveDiffTracker:
         background = np.median(corners, axis=0)
         center = square[8:42, 8:42]
         foreground = np.linalg.norm(center.astype(np.float32) - background, axis=2) > 32
+        blue, green, red = cv2.split(square)
+        yellow_highlight = (
+            (red > 170)
+            & (green > 170)
+            & (red.astype(np.int16) - blue.astype(np.int16) > 55)
+            & (green.astype(np.int16) - blue.astype(np.int16) > 55)
+        )
+        foreground &= ~yellow_highlight[8:42, 8:42]
         if float(np.mean(foreground)) < 0.12:
             return EMPTY
 
         center_gray = cv2.cvtColor(center, cv2.COLOR_BGR2GRAY)
-        dark_fraction = float(np.mean(center_gray < 90))
-        dark_fraction_threshold = BLACK_PIECE_DARK_FRACTION
-        if float(np.ptp(background)) > 32 and float(np.mean(background)) < 190:
-            dark_fraction_threshold = CHROMATIC_DARK_SQUARE_BLACK_PIECE_DARK_FRACTION
-        return BLACK if dark_fraction >= dark_fraction_threshold else WHITE
+        piece_luminance = float(np.median(center_gray[foreground]))
+        return WHITE if piece_luminance >= PIECE_COLOR_LUMINANCE_THRESHOLD else BLACK
 
     def _visual_grid(self, bgr) -> np.ndarray:
         b = self._bgr400(bgr)
@@ -211,3 +215,50 @@ def visual_occupancy(bgr) -> Optional[np.ndarray]:
     if bgr is None or cv2 is None:
         return None
     return MoveDiffTracker()._visual_grid(bgr)
+
+
+def highlighted_last_move(
+    bgr, orientation: str = "white"
+) -> Optional[Tuple[chess.Move, bool]]:
+    """Return a highlighted move and inferred side to move when unambiguous."""
+    if bgr is None or cv2 is None or orientation not in ("white", "black"):
+        return None
+
+    detector = MoveDiffTracker()
+    image = detector._bgr400(bgr)
+    highlighted = []
+    for row in range(8):
+        for col in range(8):
+            square = image[row * 50 : (row + 1) * 50, col * 50 : (col + 1) * 50]
+            blue, green, red = cv2.split(square)
+            yellow = (
+                (red > 170)
+                & (green > 170)
+                & (red.astype(np.int16) - blue.astype(np.int16) > 55)
+                & (green.astype(np.int16) - blue.astype(np.int16) > 55)
+            )
+            if float(np.mean(yellow)) >= 0.30:
+                highlighted.append((row, col))
+
+    if len(highlighted) != 2:
+        return None
+
+    occupancy = detector._visual_grid(bgr)
+    empty_squares = [square for square in highlighted if occupancy[square] == EMPTY]
+    occupied_squares = [
+        square for square in highlighted if occupancy[square] in (WHITE, BLACK)
+    ]
+    if len(empty_squares) != 1 or len(occupied_squares) != 1:
+        return None
+
+    def to_square(position: Tuple[int, int]) -> chess.Square:
+        row, col = position
+        if orientation == "white":
+            return chess.square(col, 7 - row)
+        return chess.square(7 - col, row)
+
+    source = to_square(empty_squares[0])
+    target = to_square(occupied_squares[0])
+    target_color = occupancy[occupied_squares[0]]
+    side_to_move = bool(target_color == BLACK)
+    return chess.Move(source, target), side_to_move

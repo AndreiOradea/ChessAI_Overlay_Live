@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from src.recognition.board_sync import resync_board
-from src.recognition.move_diff import MoveDiffTracker
+from src.recognition.move_diff import MoveDiffTracker, highlighted_last_move
 from src.recognition import piece_templates
 from src.recognition.piece_templates import PieceTemplateMatcher
 from src.chess.move_list_sync import sync_from_text
@@ -40,6 +40,39 @@ def make_board_image(board):
     return image
 
 
+def add_move_highlight(image, square, orientation="white"):
+    file = chess.square_file(square)
+    rank = chess.square_rank(square)
+    if orientation == "white":
+        row, col = 7 - rank, file
+    else:
+        row, col = rank, 7 - file
+    tile = image[row * 50 : (row + 1) * 50, col * 50 : (col + 1) * 50]
+    original = tile.copy()
+    corners = np.concatenate(
+        (
+            tile[3:10, 3:10].reshape(-1, 3),
+            tile[3:10, 40:47].reshape(-1, 3),
+            tile[40:47, 3:10].reshape(-1, 3),
+            tile[40:47, 40:47].reshape(-1, 3),
+        )
+    )
+    background = np.median(corners, axis=0)
+    foreground = np.linalg.norm(tile.astype(np.float32) - background, axis=2) > 32
+    tile[:] = (0, 255, 255)
+    tile[foreground] = original[foreground]
+
+
+def image_with_highlighted_last_move():
+    board = chess.Board()
+    board.push_san("e4")
+    board.push_san("f5")
+    image = make_board_image(board)
+    add_move_highlight(image, chess.F7)
+    add_move_highlight(image, chess.F5)
+    return image
+
+
 def test_visual_grid_classifies_piece_squares():
     board = chess.Board()
     board.push_san("e4")
@@ -55,21 +88,74 @@ def test_visual_grid_classifies_piece_squares():
 def test_color_classifier_separates_dark_piece_with_bright_outline():
     detector = MoveDiffTracker()
 
-    def outlined_piece(dark_columns, background=(120, 120, 120)):
+    def piece_image(white_piece):
+        background = (115, 149, 82)
         square = np.full((50, 50, 3), background, dtype=np.uint8)
-        square[8:42, 8:42] = 255
-        square[8:42, 8 : 8 + dark_columns] = 0
+        cv2.ellipse(square, (25, 25), (14, 17), 0, 0, 360, (0, 0, 0), -1)
+        if white_piece:
+            cv2.ellipse(square, (25, 25), (10, 13), 0, 0, 360, (255, 255, 255), -1)
+        else:
+            cv2.line(square, (25, 16), (25, 22), (255, 255, 255), 2)
+            cv2.line(square, (20, 26), (30, 26), (255, 255, 255), 2)
         image = np.full((400, 400, 3), background, dtype=np.uint8)
         image[:50, :50] = square
         return image
 
-    black_piece = outlined_piece(14)
-    white_piece = outlined_piece(13)
+    black_piece = piece_image(False)
+    white_piece = piece_image(True)
     assert detector._classify_square(black_piece, 0, 0) == 2
     assert detector._classify_square(white_piece, 0, 0) == 1
-    assert detector._classify_square(
-        outlined_piece(14, background=(82, 149, 115)), 0, 0
-    ) == 1
+
+
+def test_yellow_last_move_highlight_infers_side_to_move():
+    result = highlighted_last_move(image_with_highlighted_last_move())
+
+    assert result == (chess.Move.from_uci("f7f5"), chess.WHITE)
+    assert type(result[1]) is bool
+
+
+def test_yellow_last_move_highlight_respects_black_orientation():
+    image = cv2.rotate(
+        image_with_highlighted_last_move(), cv2.ROTATE_180
+    )
+
+    assert highlighted_last_move(image, orientation="black") == (
+        chess.Move.from_uci("f7f5"),
+        chess.WHITE,
+    )
+
+
+def test_yellow_last_move_highlight_rejects_ambiguous_squares():
+    image = image_with_highlighted_last_move()
+    add_move_highlight(image, chess.A3)
+
+    assert highlighted_last_move(image) is None
+
+
+def test_template_resync_retries_small_square_crop_offsets():
+    matcher = PieceTemplateMatcher()
+    matcher.ready = True
+    image = np.indices((400, 400)).sum(axis=0).astype(np.uint8)
+    image = np.repeat(image[:, :, None], 3, axis=2)
+    original_cell = piece_templates._cell(image, 0, 0)
+    matcher.classify_square = Mock(
+        side_effect=lambda cell, color=None: (
+            (None, 0.8)
+            if np.array_equal(cell, original_cell)
+            else ("r", 0.95)
+        )
+    )
+    occupancy = np.zeros((8, 8), dtype=np.int32)
+    occupancy[0, 0] = 2
+
+    with patch(
+        "src.recognition.piece_templates.visual_occupancy",
+        return_value=occupancy,
+    ):
+        pieces, confidence = matcher.board_to_piece_map(image)
+
+    assert pieces == {chess.A8: "r"}
+    assert confidence == 0.95
 
 
 def test_move_detection_rejects_misaligned_board():
@@ -184,6 +270,23 @@ def test_template_resync_rejects_position_without_kings():
     assert "Invalid position" in status
 
 
+def test_template_resync_normalizes_numpy_boolean_turn():
+    matcher = PieceTemplateMatcher()
+    matcher.ready = True
+    pieces = {
+        square: piece.symbol()
+        for square, piece in chess.Board().piece_map().items()
+    }
+    matcher.board_to_piece_map = Mock(return_value=(pieces, 0.9))
+
+    board, status, turn_known = matcher.to_board(None, turn=np.bool_(True))
+
+    assert board is not None
+    assert board.turn is chess.WHITE
+    assert turn_known
+    assert "White to move" in status
+
+
 def test_template_resync_does_not_guess_side_to_move():
     matcher = PieceTemplateMatcher()
     matcher.ready = True
@@ -286,6 +389,72 @@ def test_template_matcher_recognizes_white_outlined_piece():
     assert matcher.classify_square(target, color=True)[0] == "N"
 
 
+def test_template_conflict_prefers_raw_bishop_match_over_pawn_silhouette():
+    matcher = PieceTemplateMatcher()
+    matcher.templates = {
+        "P": [np.full((40, 40), 1, dtype=np.uint8)],
+        "B": [np.full((40, 40), 2, dtype=np.uint8)],
+    }
+    matcher.ready = True
+    matcher._score = Mock(
+        side_effect=lambda _cell, template: {1: 0.26, 2: 0.40}[int(template[0, 0])]
+    )
+
+    with (
+        patch.object(piece_templates, "_gray_norm", side_effect=lambda cell: cell),
+        patch.object(
+            piece_templates,
+            "_shape_mask",
+            side_effect=lambda cell: np.full((1, 1), int(cell.flat[0])),
+        ),
+        patch.object(
+            piece_templates,
+            "_shape_similarity",
+            side_effect=lambda _shape, template: {1: 0.80, 2: 0.61}[
+                int(template[0, 0])
+            ],
+        ),
+    ):
+        symbol, _ = matcher.classify_square(
+            np.full((40, 40, 3), 9, dtype=np.uint8), color=True
+        )
+
+    assert symbol == "B"
+
+
+def test_strong_king_silhouette_is_not_overridden_by_pawn_template():
+    matcher = PieceTemplateMatcher()
+    matcher.templates = {
+        "P": [np.full((40, 40), 1, dtype=np.uint8)],
+        "K": [np.full((40, 40), 2, dtype=np.uint8)],
+    }
+    matcher.ready = True
+    matcher._score = Mock(
+        side_effect=lambda _cell, template: {1: 0.36, 2: 0.25}[int(template[0, 0])]
+    )
+
+    with (
+        patch.object(piece_templates, "_gray_norm", side_effect=lambda cell: cell),
+        patch.object(
+            piece_templates,
+            "_shape_mask",
+            side_effect=lambda cell: np.full((1, 1), int(cell.flat[0])),
+        ),
+        patch.object(
+            piece_templates,
+            "_shape_similarity",
+            side_effect=lambda _shape, template: {1: 0.77, 2: 0.98}[
+                int(template[0, 0])
+            ],
+        ),
+    ):
+        symbol, _ = matcher.classify_square(
+            np.full((40, 40, 3), 9, dtype=np.uint8), color=True
+        )
+
+    assert symbol == "K"
+
+
 def test_template_resync_rejects_unclassified_occupied_squares():
     matcher = PieceTemplateMatcher()
     matcher.ready = True
@@ -311,6 +480,7 @@ def test_template_resync_rejects_unclassified_occupied_squares():
     assert board is None
     assert not turn_known
     assert "2/3 pieces classified" in status
+    assert "d5" in status
 
 
 def test_sync_moves_from_current_game_history():

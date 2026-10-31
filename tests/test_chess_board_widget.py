@@ -86,6 +86,31 @@ def test_internal_board_updates_when_only_turn_changes(qtbot):
     assert moves == [chess.Move.from_uci("e7e5")]
 
 
+def test_last_move_highlights_both_squares_over_analysis(qtbot):
+    board = chess.Board()
+    board.push_san("e4")
+    widget = ChessBoardWidget()
+    widget.resize(400, 400)
+    widget.set_board(board)
+    widget.set_analysis_arrows("e2e4")
+    qtbot.addWidget(widget)
+    widget.show()
+    qtbot.wait(10)
+
+    before = widget.grab().toImage()
+    widget.set_last_move("e2e4")
+    after = widget.grab().toImage()
+    tile, ox, oy = widget._board_geometry()
+
+    for square in ("e2", "e4"):
+        rect = widget._sq_rect(square, tile, ox, oy)
+        point = rect.topLeft() + QPoint(3, 3)
+        before_color = before.pixelColor(point)
+        after_color = after.pixelColor(point)
+        assert after_color.red() > before_color.red()
+        assert after_color.green() > before_color.green()
+
+
 def test_edit_mode_allows_free_placement_without_legal_move(qtbot):
     widget = ChessBoardWidget()
     widget.resize(400, 400)

@@ -16,7 +16,7 @@ from src.utils.config import AppConfig, save_config
 from src.utils.screen_capture import ScreenCapture
 from src.chess.game_tracker import GameTracker
 from src.chess.move_list_sync import sync_from_text
-from src.recognition.move_diff import MoveDiffTracker
+from src.recognition.move_diff import MoveDiffTracker, highlighted_last_move
 from src.recognition.board_sync import resync_board, mismatch, visual_occupancy
 from src.recognition.piece_templates import PieceTemplateMatcher
 from src.engine.stockfish_wrapper import StockfishEngine, AnalysisResult
@@ -40,7 +40,19 @@ class AnalysisWorker(QObject):
 
     @Slot()
     def run(self):
-        self.done.emit(self.engine.analyze(self.fen, depth=self.depth, movetime_ms=self.ms, multipv=3))
+        try:
+            result = self.engine.analyze(
+                self.fen,
+                depth=self.depth,
+                movetime_ms=self.ms,
+                multipv=3,
+            )
+        except Exception as error:
+            result = AnalysisResult(
+                fen=self.fen,
+                error=f"Analysis failed: {error}",
+            )
+        self.done.emit(result)
 
 
 class RegionSelector(QWidget):
@@ -122,6 +134,7 @@ class MainWindow(QWidget):
         self.engine = StockfishEngine(config.engine.path)
         self._paused = False
         self._analyzing = False
+        self._analysis_pending = False
         self._last_fen_analyzed = ""
         self._thread: Optional[QThread] = None
         self._worker = None
@@ -424,7 +437,7 @@ class MainWindow(QWidget):
     def _stop_engine(self):
         self._paused = True
         self.timer_eng.stop()
-        self._analyzing = False
+        self._analysis_pending = False
         self.engine.stop()
         self.board_view.clear_analysis()
         self.lbl_status.setText("Engine stopped")
@@ -434,9 +447,14 @@ class MainWindow(QWidget):
         if self.board_view.edit_mode:
             self._set_position_edit_mode(False, resume_engine=False)
         ok = self._resync_from_screen()
-        if ok and self.cmb_mode.currentText() == "LIVE ENGINE":
+        if ok:
             self._paused = False
-            self.timer_eng.start()
+            self.board_view.clear_analysis()
+            self.lbl_eval.setText("—")
+            self.lbl_best.setText("BEST: —")
+            self.lst_lines.clear()
+            if self.cmb_mode.currentText() == "LIVE ENGINE":
+                self.timer_eng.start()
             self._request_analysis(force=True)
 
     def _toggle_position_edit(self):
@@ -546,31 +564,50 @@ class MainWindow(QWidget):
             return False
         self._last_img = img
 
+        highlighted = highlighted_last_move(img, self.config.board_orientation)
+        highlighted_move = highlighted[0] if highlighted is not None else None
+        highlighted_turn = highlighted[1] if highlighted is not None else None
         template_warning = ""
         # 1) Prefer template matching (per-piece photos from start position)
         if self.templates.ready:
             try:
                 new_board, status, turn_known = self.templates.to_board(
-                    img, self.config.board_orientation
+                    img, self.config.board_orientation, turn=highlighted_turn
                 )
                 n_pieces = len(new_board.piece_map()) if new_board else 0
                 if new_board is not None and 8 <= n_pieces <= 32:
                     if new_board.board_fen() == self.tracker.state.board.board_fen():
-                        self.move_diff.force_snapshot(img)
-                        self._refresh()
-                        self.lbl_status.setText(
-                            f"Screen matches current position · {self._turn_label()}"
+                        turn_changed = (
+                            turn_known
+                            and new_board.turn != self.tracker.state.board.turn
                         )
+                        if turn_changed:
+                            current_board = self.tracker.state.board
+                            current_board.turn = new_board.turn
+                            current_board.ep_square = new_board.ep_square
+                            current_board.halfmove_clock = new_board.halfmove_clock
+                            current_board.fullmove_number = new_board.fullmove_number
+                            current_board.clear_stack()
+                            self.tracker.state.moves = []
+                            self.board_view.clear_analysis()
+                            self._last_fen_analyzed = ""
+                        self.move_diff.force_snapshot(img)
+                        self._refresh(highlighted_move)
+                        message = (
+                            "Screen position and turn synced"
+                            if turn_changed
+                            else "Screen matches current position"
+                        )
+                        self.lbl_status.setText(f"{message} · {self._turn_label()}")
                         return True
                     if turn_known:
                         new_board.castling_rights = 0
                         self.tracker.state.board = new_board
                         self.tracker.state.moves = []
                         self.move_diff.force_snapshot(img)
-                        self.board_view.set_last_move(None)
                         self.board_view.clear_analysis()
                         self._last_fen_analyzed = ""
-                        self._refresh()
+                        self._refresh(highlighted_move)
                         self.lbl_status.setText(
                             f"{status} · history reset; verify the move list"
                         )
@@ -638,14 +675,10 @@ class MainWindow(QWidget):
         except Exception:
             pass
         self.board_view.set_board(self.tracker.state.board)
-        self.board_view.set_last_move(moves[-1].uci() if moves else None)
         self.board_view.clear_analysis()
         self._last_fen_analyzed = ""
-        self._refresh()
-        n = len(self.tracker.state.moves)
-        last = self.tracker.state.moves[-1].san if n else "—"
+        self._refresh(highlighted_move)
         self.lbl_status.setText(status)
-        self.lbl_turn.setText(f"{self._turn_label()} | Last: {last} | Moves: {n}")
         return mm <= 4
 
     def _sync_moves(self):
@@ -710,7 +743,7 @@ class MainWindow(QWidget):
     def _request_analysis(self, force: bool = False):
         if self.board_view.edit_mode:
             return
-        if self.cmb_mode.currentText() != "LIVE ENGINE":
+        if self.cmb_mode.currentText() != "LIVE ENGINE" and not force:
             return
         if self._paused and not force:
             return
@@ -728,6 +761,11 @@ class MainWindow(QWidget):
         if not force and fen == self._last_fen_analyzed:
             return
         if self._analyzing:
+            if force:
+                self._analysis_pending = True
+                self.lbl_status.setText(
+                    "Position updated · waiting for current analysis to finish…"
+                )
             return
         if not self.engine.ready:
             if not self.engine.start(self.config.engine.threads, self.config.engine.hash_mb):
@@ -750,19 +788,21 @@ class MainWindow(QWidget):
         self._analyzing = False
         self._thread = None
         self._worker = None
-        if (
+        should_analyze = self._analysis_pending
+        self._analysis_pending = False
+        should_analyze = should_analyze or (
             not self._paused
             and self.cmb_mode.currentText() == "LIVE ENGINE"
             and self.tracker.state.board.fen() != self._analysis_fen
-        ):
+        )
+        if should_analyze:
             self._request_analysis(force=True)
 
     @Slot(object)
     def _on_analysis(self, result: AnalysisResult):
-        self._analyzing = False
         if (
             self._paused
-            or self._analysis_fen != self.tracker.state.board.fen()
+            or result.fen != self.tracker.state.board.fen()
         ):
             return
         if result.error:
@@ -792,12 +832,37 @@ class MainWindow(QWidget):
         self.board_view.set_analysis_arrows(result.best_uci, alts)
         self.lbl_status.setText("Analysis ready")
 
-    def _refresh(self):
+    def _refresh(self, last_move_override: Optional[chess.Move] = None):
         b = self.tracker.state.board
         self.board_view.set_board(b)
+        moves = self.tracker.state.moves
+        last_move = moves[-1] if moves else None
         side = self.tracker.side_to_move()
-        n = len(self.tracker.state.moves)
-        last = self.tracker.state.moves[-1].san if n else "—"
+        n = len(moves)
+        if last_move_override is not None and (
+            last_move is None or last_move.uci != last_move_override.uci()
+        ):
+            self.board_view.set_last_move(last_move_override.uci())
+            last_mover = not b.turn
+            is_my_move = (last_mover == chess.WHITE) == (
+                self._my_color() == "white"
+            )
+            owner = "you" if is_my_move else "opponent"
+            last = (
+                f"{chess.square_name(last_move_override.from_square)}-"
+                f"{chess.square_name(last_move_override.to_square)} ({owner})"
+            )
+        elif last_move is None:
+            self.board_view.set_last_move(None)
+            last = "—"
+        else:
+            self.board_view.set_last_move(last_move.uci)
+            last_mover = not b.turn
+            is_my_move = (last_mover == chess.WHITE) == (
+                self._my_color() == "white"
+            )
+            owner = "you" if is_my_move else "opponent"
+            last = f"{last_move.san} ({owner})"
         self.lbl_turn.setText(f"{self._turn_label()} | Last: {last} | Moves: {n}")
         self.lst_moves.clear()
         for line in self.tracker.history_pairs():

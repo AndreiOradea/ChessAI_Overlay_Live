@@ -49,6 +49,7 @@ It sits on top of your game, reads the board from a screen region you select, mi
 - Built for **Classic** piece sets (best accuracy)
 - **Flip** board orientation (White / Black at bottom)
 - **I play: White / Black** — labels the side to move as yours or your opponent's
+- Last-move origin and destination highlighted in yellow; the move label identifies whether you or your opponent moved based on **I play**
 
 ### 🧩 Internal chessboard
 - Live copy of the game inside the app
@@ -57,18 +58,19 @@ It sits on top of your game, reads the board from a screen region you select, mi
 - Purple / green **BEST move** arrows on the internal board
 - Move list + side to move
 
-### 🧠 Engine (LIVE ENGINE mode)
+### 🧠 Engine
 - Stockfish evaluation (e.g. `+0.36`)
 - Best move + top candidate lines
 - Adjustable depth & think time
-- **Analyze** button — resync from screen + fresh analysis
+- **Analyze** button — one-time analysis of the current internal board
+- **Resync Board** — refreshes the position and requests a fresh one-time analysis
 - Async engine so the UI stays responsive
 
 ### 🎮 Modes
 
 | Mode | Engine | Best for |
 |------|--------|----------|
-| **LIVE** | ❌ Off | Rated / competitive games |
+| **LIVE** | ❌ Automatic hints off; **Analyze** runs once when clicked | Tracking without automatic hints |
 | **LIVE ENGINE** | ✅ On | Vs computer, training, allowed analysis |
 
 ---
@@ -125,7 +127,8 @@ Python 3.10+ · PySide6 · OpenCV · mss · python-chess · Stockfish (UCI)
 ## ⚖️ Fair play
 
 - **LIVE** = tracking only, no engine hints  
-- **LIVE ENGINE** = only where rules allow it  
+- **Analyze** = one-time analysis of the current internal board in either mode
+- **LIVE ENGINE** = continuous analysis, only where rules allow it
 - No browser injection · no auto-moves · no server input  
 
 Use engine help only in offline / vs-computer / explicitly allowed games.
@@ -137,7 +140,7 @@ Use engine help only in offline / vs-computer / explicitly allowed games.
 | Issue | Fix |
 |------|-----|
 | Board stuck / wrong | **Reset**, new game from move 1, tighter region |
-| Resync is inaccurate | Select only the 8×8 board; templates are learned from the starting position and silhouette matching handles outlined pieces. Uncertain reads are rejected. Use **Edit Position** to correct a position, then set the side to move. |
+| Resync is inaccurate | Select only the 8×8 board; templates are learned from the starting position and silhouette matching handles outlined pieces. Resync uses clear yellow last-move squares to infer whose turn is next; ambiguous highlights are not used. Uncertain reads are rejected. Use **Edit Position** to correct a position, then set the side to move. |
 | Missed a move | Wait for piece to settle · press **Analyze** |
 | Stockfish not found | Place `.exe` in `stockfish\` and restart |
 | Bad detection | Use **Classic** pieces on Chess.com |
