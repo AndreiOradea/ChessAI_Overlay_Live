@@ -34,6 +34,16 @@ START_PIECES_WHITE_BOTTOM = {
 
 TEMPLATE_SIZE = 40
 STORE = Path.home() / ".chessai_board_live" / "templates"
+CELL_MATCH_OFFSETS = (
+    (-2, -2),
+    (-2, 0),
+    (-2, 2),
+    (0, -2),
+    (0, 2),
+    (2, -2),
+    (2, 0),
+    (2, 2),
+)
 
 
 def _board400(bgr: np.ndarray) -> np.ndarray:
@@ -275,6 +285,15 @@ class PieceTemplateMatcher:
                 symbol = best_type if color else best_type.lower()
                 return symbol, max(best_score, best_shape_score)
             if shape_confident:
+                shape_template_score = scores.get(best_shape_type, -1.0)
+                if (
+                    best_type != best_shape_type
+                    and best_shape_score < 0.88
+                    and best_score >= 0.35
+                    and best_score - shape_template_score >= 0.10
+                ):
+                    symbol = best_type if color else best_type.lower()
+                    return symbol, best_score
                 symbol = best_shape_type if color else best_shape_type.lower()
                 return symbol, best_shape_score
             return None, max(0.0, best_score, best_shape_score)
@@ -301,6 +320,37 @@ class PieceTemplateMatcher:
         # Default empty when unsure (better than filling board with knights)
         return None, max(best_sc, empty_sc)
 
+    def _classify_aligned_square(
+        self, img: np.ndarray, row: int, col: int, color: bool
+    ) -> Tuple[Optional[str], float]:
+        cell = _cell(img, row, col)
+        symbol, confidence = self.classify_square(cell, color=color)
+        if symbol is not None:
+            return symbol, confidence
+
+        y = row * 50 + 5
+        x = col * 50 + 5
+        alternatives: Dict[str, float] = {}
+        for dy, dx in CELL_MATCH_OFFSETS:
+            candidate = img[
+                y + dy : y + dy + TEMPLATE_SIZE,
+                x + dx : x + dx + TEMPLATE_SIZE,
+            ]
+            candidate_symbol, candidate_confidence = self.classify_square(
+                candidate, color=color
+            )
+            if candidate_symbol is not None:
+                alternatives[candidate_symbol] = max(
+                    alternatives.get(candidate_symbol, -1.0), candidate_confidence
+                )
+
+        ranked = sorted(alternatives.items(), key=lambda item: item[1], reverse=True)
+        if not ranked:
+            return None, confidence
+        if len(ranked) > 1 and ranked[0][1] - ranked[1][1] < 0.04:
+            return None, ranked[0][1]
+        return ranked[0]
+
     def board_to_piece_map(
         self, bgr: np.ndarray, orientation: str = "white"
     ) -> Tuple[Dict[chess.Square, str], float]:
@@ -321,9 +371,8 @@ class PieceTemplateMatcher:
                 piece_color = int(occupancy[row, col])
                 if piece_color == 0:
                     continue
-                cell = _cell(img, row, col)
-                sym, sc = self.classify_square(
-                    cell, color=piece_color == 1
+                sym, sc = self._classify_aligned_square(
+                    img, row, col, color=piece_color == 1
                 )
                 scores.append(sc)
                 if orientation == "white":
@@ -346,14 +395,29 @@ class PieceTemplateMatcher:
         """
         if not self.ready:
             return None, "No verified templates – select region at the starting position", False
+        if turn is not None:
+            turn = bool(turn)
         pieces, avg = self.board_to_piece_map(bgr, orientation)
         occupancy = visual_occupancy(bgr)
         if occupancy is not None:
             occupied_count = int(np.count_nonzero(occupancy))
             if len(pieces) != occupied_count:
+                unclassified = []
+                for row, col in zip(*np.nonzero(occupancy)):
+                    if orientation == "white":
+                        square = chess.square(int(col), 7 - int(row))
+                    else:
+                        square = chess.square(7 - int(col), int(row))
+                    if square not in pieces:
+                        unclassified.append(chess.square_name(square))
+                missed_squares = (
+                    f" Check these squares: {', '.join(unclassified)}."
+                    if unclassified
+                    else ""
+                )
                 return (
                     None,
-                    f"Piece recognition uncertain ({len(pieces)}/{occupied_count} pieces classified) – keeping previous board",
+                    f"Piece recognition uncertain ({len(pieces)}/{occupied_count} pieces classified).{missed_squares} Keeping previous board.",
                     False,
                 )
         n = len(pieces)
@@ -400,7 +464,12 @@ class PieceTemplateMatcher:
                 valid_turns.append(candidate_turn)
         if turn is not None:
             if turn not in valid_turns:
-                return None, "Invalid position detected – keeping previous board", False
+                board.turn = turn
+                return (
+                    None,
+                    self._invalid_position_status(board),
+                    False,
+                )
             board.turn = turn
             turn_known = True
         elif len(valid_turns) == 1:
@@ -410,8 +479,31 @@ class PieceTemplateMatcher:
             board.turn = chess.WHITE
             turn_known = False
         else:
-            return None, "Invalid position detected – keeping previous board", False
+            return None, self._invalid_position_status(board), False
         n = len(pieces)
         side = "White" if board.turn == chess.WHITE else "Black"
         turn_status = f"{side} to move" if turn_known else "side to move is ambiguous"
         return board, f"Templates: {n} pieces · conf {avg:.2f} · {turn_status}", turn_known
+
+    @staticmethod
+    def _invalid_position_status(board: chess.Board) -> str:
+        reasons = (
+            (chess.STATUS_NO_WHITE_KING, "missing white king"),
+            (chess.STATUS_NO_BLACK_KING, "missing black king"),
+            (chess.STATUS_TOO_MANY_KINGS, "too many kings"),
+            (chess.STATUS_PAWNS_ON_BACKRANK, "pawn on a back rank"),
+            (chess.STATUS_TOO_MANY_WHITE_PAWNS, "too many white pawns"),
+            (chess.STATUS_TOO_MANY_BLACK_PAWNS, "too many black pawns"),
+            (chess.STATUS_TOO_MANY_WHITE_PIECES, "too many white pieces"),
+            (chess.STATUS_TOO_MANY_BLACK_PIECES, "too many black pieces"),
+            (chess.STATUS_OPPOSITE_CHECK, "both kings are in check"),
+            (chess.STATUS_IMPOSSIBLE_CHECK, "impossible check"),
+            (chess.STATUS_TOO_MANY_CHECKERS, "king is attacked by multiple pieces"),
+        )
+        status = board.status()
+        details = [label for flag, label in reasons if status & flag]
+        reason = ", ".join(details) if details else "piece placement is illegal"
+        return (
+            f"Invalid position: recognized board has {reason}. "
+            "Use Edit Position to correct the pieces; previous board kept."
+        )

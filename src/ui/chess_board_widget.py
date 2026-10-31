@@ -277,15 +277,15 @@ class ChessBoardWidget(QWidget):
                 light = (r + c) % 2 == 0
                 p.fillRect(ox + c * tile, oy + r * tile, tile, tile, LIGHT if light else DARK)
 
-        # last move wash
-        if self._last_move:
-            for sq in self._last_move:
-                rect = self._sq_rect(sq, tile, ox, oy)
-                p.fillRect(rect, QColor(255, 255, 0, 55))
-
         # analysis highlights
         for sq, col in self._highlights:
             p.fillRect(self._sq_rect(sq, tile, ox, oy), col)
+
+        # Keep the actual last move visible even when analysis highlights overlap it.
+        if self._last_move:
+            for sq in self._last_move:
+                rect = self._sq_rect(sq, tile, ox, oy)
+                p.fillRect(rect, QColor(255, 255, 0, 125))
 
         # pieces
         font = QFont("Segoe UI Symbol", max(14, int(tile * 0.65)))

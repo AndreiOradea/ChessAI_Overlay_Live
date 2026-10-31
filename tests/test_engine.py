@@ -8,7 +8,7 @@ from src.engine.stockfish_wrapper import StockfishEngine
 @pytest.fixture
 def engine():
     eng = StockfishEngine()
-    if not eng.engine_path:
+    if not eng.path:
         pytest.skip("Stockfish binary not found")
     ok = eng.start(threads=1, hash_mb=16)
     if not ok:
@@ -21,7 +21,7 @@ def test_starting_position_eval(engine):
     result = engine.analyze(chess.STARTING_FEN, depth=10, multipv=1)
     assert result.error is None
     assert result.evaluation != ""
-    assert result.best_move_san is not None
+    assert result.best_san is not None
 
 
 def test_mate_in_one(engine):
