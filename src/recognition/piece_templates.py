@@ -57,6 +57,68 @@ def _gray_norm(bgr_cell: np.ndarray) -> np.ndarray:
     return g
 
 
+def _shape_mask(cell: np.ndarray) -> np.ndarray:
+    if cell.ndim == 3:
+        corners = np.concatenate(
+            (
+                cell[1:5, 1:5].reshape(-1, 3),
+                cell[1:5, -5:].reshape(-1, 3),
+                cell[-5:, 1:5].reshape(-1, 3),
+                cell[-5:, -5:].reshape(-1, 3),
+            )
+        )
+        background = np.median(corners, axis=0)
+        foreground = (
+            np.linalg.norm(cell.astype(np.float32) - background, axis=2) > 32
+        ).astype(np.uint8)
+    else:
+        corners = np.concatenate(
+            (
+                cell[1:5, 1:5].ravel(),
+                cell[1:5, -5:].ravel(),
+                cell[-5:, 1:5].ravel(),
+                cell[-5:, -5:].ravel(),
+            )
+        )
+        background = np.median(corners)
+        foreground = (
+            np.abs(cell.astype(np.float32) - background) > 32
+        ).astype(np.uint8)
+
+    contours, _ = cv2.findContours(
+        foreground, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    contours = [contour for contour in contours if cv2.contourArea(contour) > 8]
+    if not contours:
+        return np.zeros((TEMPLATE_SIZE, TEMPLATE_SIZE), dtype=np.uint8)
+
+    contour = max(contours, key=cv2.contourArea)
+    x, y, width, height = cv2.boundingRect(contour)
+    silhouette = np.zeros_like(foreground)
+    cv2.drawContours(silhouette, [contour], -1, 1, thickness=cv2.FILLED)
+    silhouette = silhouette[y : y + height, x : x + width]
+
+    scale = min(32 / width, 36 / height)
+    width = max(1, round(width * scale))
+    height = max(1, round(height * scale))
+    silhouette = cv2.resize(
+        silhouette, (width, height), interpolation=cv2.INTER_NEAREST
+    )
+    normalized = np.zeros((TEMPLATE_SIZE, TEMPLATE_SIZE), dtype=np.uint8)
+    normalized[38 - height : 38, 20 - width // 2 : 20 - width // 2 + width] = (
+        silhouette
+    )
+    return normalized
+
+
+def _shape_similarity(first: np.ndarray, second: np.ndarray) -> float:
+    first_mask = first > 0
+    second_mask = second > 0
+    overlap = int(np.count_nonzero(first_mask & second_mask))
+    total = int(np.count_nonzero(first_mask)) + int(np.count_nonzero(second_mask))
+    return 2 * overlap / total if total else 0.0
+
+
 class PieceTemplateMatcher:
     def __init__(self):
         # symbol -> list of gray templates
@@ -164,6 +226,8 @@ class PieceTemplateMatcher:
         cell = _gray_norm(bgr_cell)
         if color is not None:
             scores = {}
+            shape = _shape_mask(bgr_cell)
+            shape_scores = {}
             for symbol, templates in self.templates.items():
                 if symbol.isupper() != color:
                     continue
@@ -172,15 +236,48 @@ class PieceTemplateMatcher:
                     default=-1.0,
                 )
                 scores[symbol.upper()] = max(scores.get(symbol.upper(), -1.0), score)
+                shape_score = max(
+                    (
+                        _shape_similarity(shape, _shape_mask(template))
+                        for template in templates
+                    ),
+                    default=-1.0,
+                )
+                shape_scores[symbol.upper()] = max(
+                    shape_scores.get(symbol.upper(), -1.0), shape_score
+                )
             ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-            if not ranked:
+            shape_ranked = sorted(
+                shape_scores.items(), key=lambda item: item[1], reverse=True
+            )
+            if not ranked or not shape_ranked:
                 return None, 0.0
             best_type, best_score = ranked[0]
             second_score = ranked[1][1] if len(ranked) > 1 else -1.0
-            if best_score < 0.55 or best_score - second_score < 0.04:
-                return None, max(0.0, best_score)
-            symbol = best_type if color else best_type.lower()
-            return symbol, best_score
+            template_confident = best_score >= 0.55 and best_score - second_score >= 0.04
+
+            best_shape_type, best_shape_score = shape_ranked[0]
+            second_shape_score = (
+                shape_ranked[1][1] if len(shape_ranked) > 1 else -1.0
+            )
+            shape_confident = (
+                best_shape_score >= 0.80
+                and best_shape_score - second_shape_score >= 0.04
+            )
+
+            if (
+                template_confident
+                and shape_confident
+                and best_type != best_shape_type
+            ):
+                return None, max(best_score, best_shape_score)
+            if template_confident:
+                symbol = best_type if color else best_type.lower()
+                return symbol, max(best_score, best_shape_score)
+            if shape_confident:
+                symbol = best_shape_type if color else best_shape_type.lower()
+                return symbol, best_shape_score
+            return None, max(0.0, best_score, best_shape_score)
 
         best_sym = None
         best_sc = -1.0

@@ -22,6 +22,7 @@ EMPTY, WHITE, BLACK = 0, 1, 2
 # Frames the board must stay identical before we accept a move
 STABLE_FRAMES_REQUIRED = 2
 BLACK_PIECE_DARK_FRACTION = 0.39
+CHROMATIC_DARK_SQUARE_BLACK_PIECE_DARK_FRACTION = 0.45
 
 
 class MoveDiffTracker:
@@ -91,7 +92,10 @@ class MoveDiffTracker:
 
         center_gray = cv2.cvtColor(center, cv2.COLOR_BGR2GRAY)
         dark_fraction = float(np.mean(center_gray < 90))
-        return BLACK if dark_fraction >= BLACK_PIECE_DARK_FRACTION else WHITE
+        dark_fraction_threshold = BLACK_PIECE_DARK_FRACTION
+        if float(np.ptp(background)) > 32 and float(np.mean(background)) < 190:
+            dark_fraction_threshold = CHROMATIC_DARK_SQUARE_BLACK_PIECE_DARK_FRACTION
+        return BLACK if dark_fraction >= dark_fraction_threshold else WHITE
 
     def _visual_grid(self, bgr) -> np.ndarray:
         b = self._bgr400(bgr)

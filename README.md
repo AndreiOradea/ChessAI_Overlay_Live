@@ -137,7 +137,7 @@ Use engine help only in offline / vs-computer / explicitly allowed games.
 | Issue | Fix |
 |------|-----|
 | Board stuck / wrong | **Reset**, new game from move 1, tighter region |
-| Resync is inaccurate | Select only the 8×8 board; templates are learned from the starting position. Uncertain reads are rejected. Use **Edit Position** to drag pieces or right-click squares to correct a position, then set the side to move. |
+| Resync is inaccurate | Select only the 8×8 board; templates are learned from the starting position and silhouette matching handles outlined pieces. Uncertain reads are rejected. Use **Edit Position** to correct a position, then set the side to move. |
 | Missed a move | Wait for piece to settle · press **Analyze** |
 | Stockfish not found | Place `.exe` in `stockfish\` and restart |
 | Bad detection | Use **Classic** pieces on Chess.com |

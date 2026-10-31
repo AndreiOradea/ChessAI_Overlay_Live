@@ -55,11 +55,11 @@ def test_visual_grid_classifies_piece_squares():
 def test_color_classifier_separates_dark_piece_with_bright_outline():
     detector = MoveDiffTracker()
 
-    def outlined_piece(dark_columns):
-        square = np.full((50, 50, 3), 120, dtype=np.uint8)
+    def outlined_piece(dark_columns, background=(120, 120, 120)):
+        square = np.full((50, 50, 3), background, dtype=np.uint8)
         square[8:42, 8:42] = 255
         square[8:42, 8 : 8 + dark_columns] = 0
-        image = np.full((400, 400, 3), 120, dtype=np.uint8)
+        image = np.full((400, 400, 3), background, dtype=np.uint8)
         image[:50, :50] = square
         return image
 
@@ -67,6 +67,9 @@ def test_color_classifier_separates_dark_piece_with_bright_outline():
     white_piece = outlined_piece(13)
     assert detector._classify_square(black_piece, 0, 0) == 2
     assert detector._classify_square(white_piece, 0, 0) == 1
+    assert detector._classify_square(
+        outlined_piece(14, background=(82, 149, 115)), 0, 0
+    ) == 1
 
 
 def test_move_detection_rejects_misaligned_board():
@@ -248,6 +251,39 @@ def test_flat_empty_template_does_not_match_every_square_perfectly():
 
     assert matcher._score(piece_cell, empty_template) < 1.0
     assert matcher._score(empty_template.copy(), empty_template) == 1.0
+
+
+def test_template_matcher_recognizes_white_outlined_piece():
+    matcher = PieceTemplateMatcher()
+    silhouette = np.zeros((40, 40), dtype=np.uint8)
+    knight = np.asarray(
+        [
+            (8, 29),
+            (12, 20),
+            (17, 15),
+            (15, 8),
+            (23, 8),
+            (27, 16),
+            (32, 24),
+            (31, 34),
+            (8, 34),
+        ],
+        dtype=np.int32,
+    )
+    cv2.fillPoly(silhouette, [knight], 255)
+    matcher.templates = {
+        "N": [np.where(silhouette > 0, 0, 235).astype(np.uint8)]
+    }
+    matcher.ready = True
+
+    target = np.full((40, 40, 3), (82, 149, 115), dtype=np.uint8)
+    target[silhouette > 0] = (255, 255, 255)
+    contours, _ = cv2.findContours(
+        silhouette, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    cv2.drawContours(target, contours, -1, (0, 0, 0), thickness=2)
+
+    assert matcher.classify_square(target, color=True)[0] == "N"
 
 
 def test_template_resync_rejects_unclassified_occupied_squares():
