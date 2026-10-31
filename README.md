@@ -97,6 +97,11 @@ or:
 ```bat
 python main.py
 ```
+or:
+```bat
+dist\ChessAI_Overlay_Live\ChessAI_Overlay_Live.exe
+```
+
 
 ### First game
 1. Chess.com → **Classic** pieces (not Neo)  
