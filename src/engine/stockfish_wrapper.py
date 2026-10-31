@@ -1,23 +1,11 @@
-"""
-Stockfish UCI engine wrapper.
-
-Used in:
-  - TRAINING mode
-  - ANALYSIS mode
-  - LIVE ENGINE mode (authorized / offline / private games only)
-
-Never used for move suggestions in the fair-play LIVE mode.
-"""
-
 from __future__ import annotations
-
-import chess
-import chess.engine
-from typing import Optional, List, Dict, Any
-from dataclasses import dataclass
 import os
 import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import List, Optional
+import chess
+import chess.engine
 
 
 @dataclass
@@ -25,234 +13,168 @@ class EngineLine:
     rank: int
     score_cp: Optional[int]
     score_mate: Optional[int]
-    pv_san: List[str]
-    pv_uci: List[str]
-    depth: int
+    pv_san: List[str] = field(default_factory=list)
+    pv_uci: List[str] = field(default_factory=list)
 
 
 @dataclass
 class AnalysisResult:
     fen: str
-    lines: List[EngineLine]
-    best_move_san: Optional[str] = None
-    best_move_uci: Optional[str] = None
-    evaluation: str = ""  # human readable e.g. "+0.45" or "M3"
+    lines: List[EngineLine] = field(default_factory=list)
+    best_san: Optional[str] = None
+    best_uci: Optional[str] = None
+    evaluation: str = ""
     error: Optional[str] = None
 
 
 class StockfishEngine:
-    """Thin, safe wrapper around python-chess engine API."""
+    def __init__(self, path: str = ""):
+        self.path = (path or "").strip()
+        if not self.path or not os.path.isfile(self.path):
+            self.path = self._find()
+        self._eng = None
 
-    def __init__(self, engine_path: str = ""):
-        self.engine_path = engine_path.strip() if engine_path else ""
-        if not self.engine_path or not os.path.isfile(self.engine_path):
-            self.engine_path = self._find_stockfish()
-        self._engine: Optional[chess.engine.SimpleEngine] = None
-        self._is_ready = False
-
-    def _find_stockfish(self) -> str:
-        """Search PATH, project folder, Desktop, Downloads, C:\\stockfish, etc."""
+    def _find(self) -> str:
+        home = Path.home()
+        project = Path(__file__).resolve().parents[2]
+        cwd = Path.cwd()
         candidates: List[str] = []
 
-        # 1) PATH
         for name in ("stockfish", "stockfish.exe"):
-            found = shutil.which(name)
-            if found:
-                candidates.append(found)
-
-        home = Path.home()
-        project_root = Path(__file__).resolve().parent.parent.parent
-        cwd = Path.cwd()
+            w = shutil.which(name)
+            if w:
+                candidates.append(w)
 
         search_dirs = [
             cwd,
             cwd / "stockfish",
-            project_root,
-            project_root / "stockfish",
-            project_root / "Stockfish",
+            project,
+            project / "stockfish",
+            project / "Stockfish",
             Path(r"C:\stockfish"),
             Path(r"C:\Stockfish"),
             home / "stockfish",
             home / "Desktop",
+            home / "Desktop" / "stockfish",
+            home / "Desktop" / "ChessAI_Board_LIVE",
+            home / "Desktop" / "ChessAI_Board_LIVE" / "stockfish",
             home / "Desktop" / "ChessAI_Overlay_LIVE",
             home / "Desktop" / "ChessAI_Overlay_LIVE" / "stockfish",
-            home / "Desktop" / "stockfish",
+            home / "Desktop" / "ChessAI_Overlay_LIVE" / "ChessAI_Overlay_LIVE" / "stockfish",
             home / "OneDrive" / "Desktop",
-            home / "OneDrive" / "Desktop" / "ChessAI_Overlay_LIVE",
-            home / "OneDrive" / "Desktop" / "ChessAI_Overlay_LIVE" / "stockfish",
             home / "OneDrive" / "Desktop" / "stockfish",
             home / "Downloads",
             home / "OneDrive" / "Downloads",
         ]
 
-        def add_exe_from_dir(d: Path, depth: int = 0):
-            if depth > 2 or not d.is_dir():
-                return
+        for d in search_dirs:
+            if not d.is_dir():
+                continue
             try:
                 for f in d.iterdir():
-                    try:
-                        if f.is_file():
-                            n = f.name.lower()
-                            if n.startswith("stockfish") and n.endswith(".exe"):
-                                candidates.append(str(f.resolve()))
-                        elif f.is_dir() and depth < 2:
-                            # common extract folders
-                            if "stockfish" in f.name.lower() or depth == 0:
-                                add_exe_from_dir(f, depth + 1)
-                    except Exception:
-                        continue
+                    n = f.name.lower()
+                    if f.is_file() and "stockfish" in n and (n.endswith(".exe") or n == "stockfish"):
+                        candidates.append(str(f.resolve()))
+                for f in d.glob("**/stockfish*.exe"):
+                    candidates.append(str(f.resolve()))
             except Exception:
                 pass
 
-        for d in search_dirs:
-            add_exe_from_dir(d, 0)
-
-        # Deduplicate while preserving order
         seen = set()
         for c in candidates:
-            if not c:
-                continue
             key = c.lower()
             if key in seen:
                 continue
             seen.add(key)
             if os.path.isfile(c):
+                print(f"[Stockfish] Found: {c}")
                 return c
-
+        print("[Stockfish] Not found in common locations")
         return ""
 
-    def start(self, threads: int = 2, hash_mb: int = 128) -> bool:
-        # Re-scan if missing (user may have added the file after launch)
-        if not self.engine_path or not os.path.isfile(self.engine_path):
-            self.engine_path = self._find_stockfish()
+    @property
+    def ready(self) -> bool:
+        return self._eng is not None
 
-        if not self.engine_path:
-            print("[Stockfish] No executable found. Place stockfish*.exe in the project stockfish\\ folder.")
+    def start(self, threads=2, hash_mb=128) -> bool:
+        if not self.path or not os.path.isfile(self.path):
+            self.path = self._find()
+        if not self.path:
             return False
-
         try:
-            self._engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
-            self._engine.configure({
-                "Threads": max(1, int(threads)),
-                "Hash": max(16, int(hash_mb)),
-            })
-            self._is_ready = True
-            print(f"[Stockfish] Started: {self.engine_path}")
+            if self._eng is not None:
+                return True
+            self._eng = chess.engine.SimpleEngine.popen_uci(self.path)
+            self._eng.configure({"Threads": max(1, int(threads)), "Hash": max(16, int(hash_mb))})
+            print(f"[Stockfish] Started: {self.path}")
             return True
         except Exception as e:
-            print(f"[Stockfish] Failed to start ({self.engine_path}): {e}")
-            self._is_ready = False
-            self.engine_path = ""
+            print(f"[Stockfish] Start failed: {e}")
+            self._eng = None
             return False
 
     def stop(self):
-        if self._engine is not None:
+        if self._eng:
             try:
-                self._engine.quit()
+                self._eng.quit()
             except Exception:
                 pass
-            self._engine = None
-            self._is_ready = False
+            self._eng = None
 
-    @property
-    def is_ready(self) -> bool:
-        return self._is_ready and self._engine is not None
-
-    def analyze(
-        self,
-        fen: str,
-        depth: int = 18,
-        movetime_ms: Optional[int] = None,
-        multipv: int = 3,
-    ) -> AnalysisResult:
-        if not self.is_ready:
-            return AnalysisResult(fen=fen, lines=[], error="Engine not ready")
-
+    def analyze(self, fen: str, depth=15, movetime_ms=800, multipv=3) -> AnalysisResult:
+        if not self.ready:
+            if not self.start():
+                return AnalysisResult(fen=fen, error="Stockfish not found")
         try:
             board = chess.Board(fen)
         except Exception as e:
-            return AnalysisResult(fen=fen, lines=[], error=f"Invalid FEN: {e}")
-
-        # Prefer time limit for responsive LIVE updates; depth is a soft cap
-        if movetime_ms is not None and movetime_ms > 0:
-            limit = chess.engine.Limit(time=movetime_ms / 1000.0, depth=depth)
-        else:
-            limit = chess.engine.Limit(depth=depth)
-
+            return AnalysisResult(fen=fen, error=str(e))
+        limit = chess.engine.Limit(time=max(0.1, movetime_ms / 1000.0), depth=depth)
         try:
-            info_list = self._engine.analyse(
-                board,
-                limit,
-                multipv=multipv,
-                info=chess.engine.INFO_ALL,
-            )
+            infos = self._eng.analyse(board, limit, multipv=multipv)
         except Exception as e:
-            return AnalysisResult(fen=fen, lines=[], error=str(e))
-
+            return AnalysisResult(fen=fen, error=str(e))
+        if not isinstance(infos, list):
+            infos = [infos]
         lines: List[EngineLine] = []
-        # Score relative to the side that is about to move:
-        # positive = good for the player to move (best choice = highest number)
-        for i, info in enumerate(info_list):
-            score = info.get("score")
-            if score is None:
+        for i, info in enumerate(infos):
+            sc = info.get("score")
+            if not sc:
                 continue
-            score_obj = score.pov(board.turn)
-            mate = score_obj.mate()
-            cp = score_obj.score(mate_score=100000)
-
+            rel = sc.pov(board.turn)
+            mate = rel.mate()
+            cp = rel.score(mate_score=100000)
             pv = info.get("pv", [])
-            pv_uci = [m.uci() for m in pv]
-            temp = board.copy()
-            pv_san = []
+            tmp = board.copy()
+            sans = []
             for m in pv:
                 try:
-                    pv_san.append(temp.san(m))
-                    temp.push(m)
+                    sans.append(tmp.san(m))
+                    tmp.push(m)
                 except Exception:
                     break
-
             lines.append(EngineLine(
                 rank=i + 1,
-                score_cp=cp if mate is None else None,
+                score_cp=None if mate is not None else cp,
                 score_mate=mate,
-                pv_san=pv_san,
-                pv_uci=pv_uci,
-                depth=info.get("depth", depth),
+                pv_san=sans,
+                pv_uci=[m.uci() for m in pv],
             ))
 
-        # Ensure best-first: highest score for side to move
-        def _sort_key(line: EngineLine):
-            if line.score_mate is not None:
-                # Mate in N for us = very good (prefer smaller N); mated = very bad
-                if line.score_mate > 0:
-                    return (2, 1000 - line.score_mate)
-                return (0, line.score_mate)  # negative mate = we get mated
-            return (1, line.score_cp or -99999)
+        def key(L: EngineLine):
+            if L.score_mate is not None:
+                return (2, 1000 - L.score_mate) if L.score_mate > 0 else (0, L.score_mate)
+            return (1, L.score_cp or -99999)
 
-        lines.sort(key=_sort_key, reverse=True)
-        for i, line in enumerate(lines):
-            line.rank = i + 1
-
+        lines.sort(key=key, reverse=True)
+        for i, L in enumerate(lines):
+            L.rank = i + 1
         best_san = lines[0].pv_san[0] if lines and lines[0].pv_san else None
         best_uci = lines[0].pv_uci[0] if lines and lines[0].pv_uci else None
-
-        evaluation = ""
+        ev = ""
         if lines:
             if lines[0].score_mate is not None:
-                evaluation = f"M{lines[0].score_mate}"
+                ev = f"M{lines[0].score_mate}"
             elif lines[0].score_cp is not None:
-                evaluation = f"{lines[0].score_cp / 100:+.2f}"
-
-        return AnalysisResult(
-            fen=fen,
-            lines=lines,
-            best_move_san=best_san,
-            best_move_uci=best_uci,
-            evaluation=evaluation,
-        )
-
-    def evaluate_simple(self, fen: str, depth: int = 15) -> str:
-        res = self.analyze(fen, depth=depth, multipv=1)
-        if res.error:
-            return "Error"
-        return res.evaluation or "?"
+                ev = f"{lines[0].score_cp / 100:+.2f}"
+        return AnalysisResult(fen=fen, lines=lines, best_san=best_san, best_uci=best_uci, evaluation=ev)
