@@ -83,8 +83,8 @@ scripts\setup.bat
 
 ### Stockfish
 1. Download: [stockfishchess.org/download](https://stockfishchess.org/download/)  
-2. Put `stockfish*.exe` in a `stockfish\` folder  
-3. Restart the app
+2. after put the extract the folder from the zip file and put it in the ChessAI-Helper folder
+3. check and run the program
 
 ### Run
 
