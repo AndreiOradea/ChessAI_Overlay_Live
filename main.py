@@ -13,7 +13,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
 from src.utils.config import load_config, APP_NAME
+from src.ui.branding import app_icon
 from src.ui.main_window import MainWindow
+from src.ui.startup_splash import StartupSplash
 
 
 def main():
@@ -22,9 +24,15 @@ def main():
     )
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    app.setWindowIcon(app_icon())
     app.setFont(QFont("Segoe UI", 10))
+    splash = StartupSplash()
+    splash.show()
+    app.processEvents()
+
     win = MainWindow(load_config())
-    win.show()
+    splash.finished.connect(win.show)
+    splash.start()
     sys.exit(app.exec())
 
 

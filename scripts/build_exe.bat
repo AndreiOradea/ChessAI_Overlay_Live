@@ -14,14 +14,8 @@ if errorlevel 1 (
 )
 
 echo.
-echo Running PyInstaller (this may take a few minutes)...
-pyinstaller --noconfirm --windowed --name "ChessAI_Overlay_LIVE" ^
-    --add-data "src;src" ^
-    --hidden-import=chess ^
-    --hidden-import=cv2 ^
-    --hidden-import=mss ^
-    --hidden-import=PIL ^
-    main.py
+echo Running PyInstaller from ChessAI_Overlay_LIVE.spec (this may take a few minutes)...
+pyinstaller --noconfirm ChessAI_Overlay_LIVE.spec
 
 echo.
 if exist dist\ChessAI_Overlay_LIVE\ChessAI_Overlay_LIVE.exe (

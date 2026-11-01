@@ -3,7 +3,7 @@ import threading
 from unittest.mock import Mock
 
 from src.engine.stockfish_wrapper import AnalysisResult, EngineLine
-from src.ui.main_window import MainWindow
+from src.ui.main_window import AnalysisWorker, MainWindow
 from src.utils.config import AppConfig
 
 
@@ -52,6 +52,57 @@ def test_position_editor_updates_tracker_and_blocks_invalid_analysis(
     window.close()
 
 
+def test_manual_piece_correction_is_kept_after_resync(qtbot, monkeypatch):
+    recognized_board = chess.Board()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4"):
+        recognized_board.push_san(san)
+    recognized_board.set_piece_at(chess.A4, chess.Piece(chess.PAWN, chess.WHITE))
+
+    class RecognizedTemplates:
+        ready = True
+
+        def to_board(self, _image, _orientation, turn=None):
+            return recognized_board.copy(), "Templates recognized", True
+
+    monkeypatch.setattr("src.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr(
+        "src.ui.main_window.StockfishEngine", lambda _path: StubEngine()
+    )
+    monkeypatch.setattr("src.ui.main_window.ScreenCapture", StubCapture)
+    monkeypatch.setattr(
+        "src.ui.main_window.PieceTemplateMatcher", RecognizedTemplates
+    )
+    monkeypatch.setattr(
+        "src.ui.main_window.highlighted_last_move",
+        lambda _image, _orientation: None,
+    )
+
+    config = AppConfig(mode="LIVE")
+    config.board_region.calibrated = True
+    window = MainWindow(config)
+    qtbot.addWidget(window)
+    window.capture.capture_region = Mock(return_value=object())
+    window.move_diff.force_snapshot = Mock()
+    window.tracker.state.board = recognized_board.copy()
+    window.board_view.set_board(recognized_board)
+
+    window._toggle_position_edit()
+    window.board_view.edit_square(chess.A4, "B")
+    window._toggle_position_edit()
+
+    assert window._resync_from_screen()
+    assert window.tracker.state.board.piece_at(chess.A4) == chess.Piece(
+        chess.BISHOP, chess.WHITE
+    )
+    assert window.tracker.state.board.is_valid()
+    assert "kept 1 manual piece correction" in window.lbl_status.text()
+    assert window._resync_from_screen()
+    assert window.tracker.state.board.piece_at(chess.A4) == chess.Piece(
+        chess.BISHOP, chess.WHITE
+    )
+    window.close()
+
+
 def test_analyze_button_runs_one_shot_analysis_in_live_mode(qtbot, monkeypatch):
     class WorkingEngine:
         ready = True
@@ -95,6 +146,144 @@ def test_analyze_button_runs_one_shot_analysis_in_live_mode(qtbot, monkeypatch):
     assert window.cmb_mode.currentText() == "LIVE"
     assert window.lbl_eval.text() == "+0.25"
     assert "e4" in window.lst_lines.item(0).text()
+    assert window.lbl_analysis_eval.text() == "+0.25"
+    assert "e4" in window.lst_analysis_lines.item(0).text()
+    window.close()
+
+
+def test_analysis_worker_uses_configured_multipv_count():
+    engine = Mock()
+    engine.analyze.return_value = AnalysisResult(fen="position")
+    worker = AnalysisWorker(engine, "position", 18, 900, multipv=4)
+
+    worker.run()
+
+    engine.analyze.assert_called_once_with(
+        "position", depth=18, movetime_ms=900, multipv=4
+    )
+
+
+def test_stopping_engine_waits_for_active_analysis_to_finish(qtbot, monkeypatch):
+    class CountingEngine:
+        def __init__(self):
+            self.stop_calls = 0
+
+        def stop(self):
+            self.stop_calls += 1
+
+    monkeypatch.setattr("src.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr(
+        "src.ui.main_window.StockfishEngine", lambda _path: StubEngine()
+    )
+    monkeypatch.setattr("src.ui.main_window.ScreenCapture", StubCapture)
+    monkeypatch.setattr("src.ui.main_window.PieceTemplateMatcher", StubTemplates)
+    window = MainWindow(AppConfig(mode="LIVE"))
+    qtbot.addWidget(window)
+    engine = CountingEngine()
+    window.engine = engine
+    window._analyzing = True
+    window._analysis_fen = window.tracker.state.board.fen()
+
+    window._stop_engine()
+
+    assert engine.stop_calls == 0
+    assert window._stop_engine_after_analysis
+
+    window._engine_thread_done()
+
+    assert engine.stop_calls == 1
+    assert not window._stop_engine_after_analysis
+    window.close()
+
+
+def test_window_close_waits_for_active_analysis_to_finish(qtbot, monkeypatch):
+    analysis_started = threading.Event()
+    finish_analysis = threading.Event()
+
+    class DelayedEngine:
+        ready = True
+        stop_calls = 0
+
+        def start(self, _threads, _hash_mb):
+            return True
+
+        def analyze(self, fen, depth, movetime_ms, multipv):
+            analysis_started.set()
+            assert finish_analysis.wait(timeout=3)
+            return AnalysisResult(fen=fen)
+
+        def stop(self):
+            self.stop_calls += 1
+
+    monkeypatch.setattr("src.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr(
+        "src.ui.main_window.StockfishEngine", lambda _path: StubEngine()
+    )
+    monkeypatch.setattr("src.ui.main_window.ScreenCapture", StubCapture)
+    monkeypatch.setattr("src.ui.main_window.PieceTemplateMatcher", StubTemplates)
+    window = MainWindow(AppConfig(mode="LIVE"))
+    qtbot.addWidget(window)
+    engine = DelayedEngine()
+    window.engine = engine
+    window.show()
+    window._request_analysis(force=True)
+    assert analysis_started.wait(timeout=3)
+
+    window.close()
+
+    assert window.isVisible()
+    assert window._close_when_idle
+    assert engine.stop_calls == 0
+
+    finish_analysis.set()
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=3000)
+
+    assert engine.stop_calls == 1
+
+
+def test_dead_engine_is_restarted_and_analysis_retried_once(qtbot, monkeypatch):
+    class RecoverableEngine:
+        def __init__(self):
+            self.stop_calls = 0
+            self.start_calls = 0
+
+        def stop(self):
+            self.stop_calls += 1
+
+        def start(self, _threads, _hash_mb):
+            self.start_calls += 1
+            return True
+
+    monkeypatch.setattr("src.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr(
+        "src.ui.main_window.StockfishEngine", lambda _path: StubEngine()
+    )
+    monkeypatch.setattr("src.ui.main_window.ScreenCapture", StubCapture)
+    monkeypatch.setattr("src.ui.main_window.PieceTemplateMatcher", StubTemplates)
+    window = MainWindow(AppConfig(mode="LIVE"))
+    qtbot.addWidget(window)
+    engine = RecoverableEngine()
+    window.engine = engine
+    window._analyzing = True
+    window._analysis_fen = window.tracker.state.board.fen()
+    retry = Mock()
+    window._request_analysis = retry
+
+    window._on_analysis(
+        AnalysisResult(
+            fen=window.tracker.state.board.fen(),
+            error="Engine process died unexpectedly (exit code: 1)",
+        )
+    )
+
+    assert window._restart_engine_when_idle
+    assert window._analysis_pending
+
+    window._engine_thread_done()
+
+    assert engine.stop_calls == 1
+    assert engine.start_calls == 1
+    retry.assert_called_once_with(force=True)
     window.close()
 
 

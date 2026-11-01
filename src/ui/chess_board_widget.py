@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import List, Optional, Tuple
 import chess
-from PySide6.QtCore import Qt, QRect, QPointF, Signal
+from PySide6.QtCore import Qt, QRect, QPointF, QElapsedTimer, QTimer, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPainterPath
 from PySide6.QtWidgets import QMenu, QWidget
 
@@ -30,6 +30,11 @@ class ChessBoardWidget(QWidget):
         self._board = chess.Board()
         self._orientation = "white"  # side at bottom
         self._arrows: List[Tuple[str, str, QColor]] = []  # from,to,color
+        self._arrow_progress = 1.0
+        self._arrow_elapsed = QElapsedTimer()
+        self._arrow_animation_timer = QTimer(self)
+        self._arrow_animation_timer.setInterval(16)
+        self._arrow_animation_timer.timeout.connect(self._advance_arrow_animation)
         self._highlights: List[Tuple[str, QColor]] = []
         self._last_move: Optional[Tuple[str, str]] = None
         self._selected_square: Optional[chess.Square] = None
@@ -37,6 +42,11 @@ class ChessBoardWidget(QWidget):
         self._dragging = False
         self._mouse_pos = QPointF()
         self._edit_mode = False
+        self._show_coordinates = True
+        self._accent = PURPLE
+        self._background = BG
+        self._light_square = LIGHT
+        self._dark_square = DARK
 
     @property
     def edit_mode(self) -> bool:
@@ -124,24 +134,58 @@ class ChessBoardWidget(QWidget):
             self._orientation = orientation
             self.update()
 
+    def set_show_coordinates(self, enabled: bool):
+        self._show_coordinates = bool(enabled)
+        self.update()
+
+    def set_colors(
+        self, background: QColor, light_square: QColor, dark_square: QColor,
+        accent: QColor,
+    ):
+        self._background = QColor(background)
+        self._light_square = QColor(light_square)
+        self._dark_square = QColor(dark_square)
+        self._accent = QColor(accent)
+        self.update()
+
     def set_analysis_arrows(self, best_uci: Optional[str], alt_uci: Optional[List[str]] = None):
         self._arrows = []
         self._highlights = []
         if best_uci and len(best_uci) >= 4:
             frm, to = best_uci[:2], best_uci[2:4]
-            self._arrows.append((frm, to, PURPLE))
-            self._highlights.append((frm, QColor(155, 89, 182, 100)))
+            best_color = QColor(self._accent)
+            self._arrows.append((frm, to, best_color))
+            origin_color = QColor(best_color)
+            origin_color.setAlpha(100)
+            self._highlights.append((frm, origin_color))
             self._highlights.append((to, QColor(46, 204, 113, 120)))
         if alt_uci:
             for i, u in enumerate(alt_uci[:2]):
                 if u and len(u) >= 4:
-                    self._arrows.append((u[:2], u[2:4], QColor(142, 68, 173, 140 - i * 30)))
+                    alt_color = QColor(self._accent)
+                    alt_color.setAlpha(140 - i * 30)
+                    self._arrows.append((u[:2], u[2:4], alt_color))
+        if self._arrows:
+            self._arrow_progress = 0.0
+            self._arrow_elapsed.start()
+            self._arrow_animation_timer.start()
+        else:
+            self._arrow_progress = 1.0
+            self._arrow_animation_timer.stop()
         self.update()
 
     def clear_analysis(self):
         self._arrows = []
         self._highlights = []
+        self._arrow_progress = 1.0
+        self._arrow_animation_timer.stop()
         self.update()
+
+    def _advance_arrow_animation(self):
+        self._arrow_progress = min(1.0, self._arrow_elapsed.elapsed() / 220)
+        self.update()
+        if self._arrow_progress >= 1.0:
+            self._arrow_animation_timer.stop()
 
     def set_last_move(self, uci: Optional[str]):
         if uci and len(uci) >= 4:
@@ -160,11 +204,15 @@ class ChessBoardWidget(QWidget):
         return QRect(ox + col * tile, oy + row * tile, tile, tile)
 
     def _board_geometry(self) -> Tuple[int, int, int]:
-        side = min(self.width(), self.height()) - 8
+        coordinate_gutter = 18 if self._show_coordinates else 0
+        side = min(
+            self.width() - coordinate_gutter,
+            self.height() - coordinate_gutter,
+        ) - 8
         tile = side // 8
         board_px = tile * 8
-        ox = (self.width() - board_px) // 2
-        oy = (self.height() - board_px) // 2
+        ox = (self.width() - board_px + coordinate_gutter) // 2
+        oy = (self.height() - board_px - coordinate_gutter) // 2
         return tile, ox, oy
 
     def _square_at(self, pos) -> Optional[chess.Square]:
@@ -267,7 +315,7 @@ class ChessBoardWidget(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.fillRect(self.rect(), BG)
+        p.fillRect(self.rect(), self._background)
         tile, ox, oy = self._board_geometry()
         board_px = tile * 8
 
@@ -275,7 +323,38 @@ class ChessBoardWidget(QWidget):
         for r in range(8):
             for c in range(8):
                 light = (r + c) % 2 == 0
-                p.fillRect(ox + c * tile, oy + r * tile, tile, tile, LIGHT if light else DARK)
+                p.fillRect(
+                    ox + c * tile,
+                    oy + r * tile,
+                    tile,
+                    tile,
+                    self._light_square if light else self._dark_square,
+                )
+
+        if self._show_coordinates:
+            p.setPen(QColor("#858d9f"))
+            coordinate_font = QFont("Segoe UI", max(7, min(10, tile // 8)))
+            coordinate_font.setBold(True)
+            p.setFont(coordinate_font)
+            for index in range(8):
+                file_index = 7 - index if self._orientation == "black" else index
+                rank = index + 1 if self._orientation == "black" else 8 - index
+                p.drawText(
+                    0,
+                    oy + index * tile,
+                    max(12, ox - 2),
+                    tile,
+                    Qt.AlignmentFlag.AlignCenter,
+                    str(rank),
+                )
+                p.drawText(
+                    ox + index * tile,
+                    oy + board_px,
+                    tile,
+                    max(12, self.height() - oy - board_px),
+                    Qt.AlignmentFlag.AlignCenter,
+                    chr(ord("a") + file_index),
+                )
 
         # analysis highlights
         for sq, col in self._highlights:
@@ -327,25 +406,36 @@ class ChessBoardWidget(QWidget):
             self._draw_arrow(p, frm, to, col, tile, ox, oy)
 
         # frame
-        p.setPen(QPen(QColor(241, 196, 15) if self._edit_mode else PURPLE, 2))
+        p.setPen(QPen(QColor(241, 196, 15) if self._edit_mode else self._accent, 2))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(ox, oy, board_px, board_px)
 
     def _draw_arrow(self, p: QPainter, frm: str, to: str, col: QColor, tile: int, ox: int, oy: int):
         a = self._sq_rect(frm, tile, ox, oy).center()
         b = self._sq_rect(to, tile, ox, oy).center()
+        progress = self._arrow_progress
+        if progress <= 0:
+            return
+        tip = QPointF(
+            a.x() + (b.x() - a.x()) * progress,
+            a.y() + (b.y() - a.y()) * progress,
+        )
+        arrow_color = QColor(col)
+        arrow_color.setAlpha(round(col.alpha() * min(1.0, progress * 3)))
         pen = QPen(col, max(3, tile // 10), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        pen.setColor(arrow_color)
         p.setPen(pen)
-        p.setBrush(QBrush(col))
-        p.drawLine(a, b)
-        # arrow head
+        p.setBrush(QBrush(arrow_color))
+        p.drawLine(QPointF(a), tip)
+        if progress < 0.12:
+            return
         import math
         ang = math.atan2(b.y() - a.y(), b.x() - a.x())
-        size = tile * 0.28
-        p1 = QPointF(b.x() - size * math.cos(ang - 0.4), b.y() - size * math.sin(ang - 0.4))
-        p2 = QPointF(b.x() - size * math.cos(ang + 0.4), b.y() - size * math.sin(ang + 0.4))
+        size = tile * 0.28 * min(1.0, progress * 3)
+        p1 = QPointF(tip.x() - size * math.cos(ang - 0.4), tip.y() - size * math.sin(ang - 0.4))
+        p2 = QPointF(tip.x() - size * math.cos(ang + 0.4), tip.y() - size * math.sin(ang + 0.4))
         path = QPainterPath()
-        path.moveTo(b)
+        path.moveTo(tip)
         path.lineTo(p1)
         path.lineTo(p2)
         path.closeSubpath()

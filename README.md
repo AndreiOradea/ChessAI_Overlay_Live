@@ -54,8 +54,9 @@ It sits on top of your game, reads the board from a screen region you select, mi
 ### 🧩 Internal chessboard
 - Live copy of the game inside the app
 - **Edit Position** — drag pieces freely; right-click a square to add/remove a piece or set whose turn it is
+- Manual piece corrections are retained during resync, so a corrected bishop on a4 will not revert to a pawn
 - Last move highlight
-- Purple / green **BEST move** arrows on the internal board
+- Purple / green **BEST move** arrows animate smoothly onto the internal board
 - Move list + side to move
 
 ### 🧠 Engine
@@ -65,6 +66,14 @@ It sits on top of your game, reads the board from a screen region you select, mi
 - **Analyze** button — one-time analysis of the current internal board
 - **Resync Board** — refreshes the position and requests a fresh one-time analysis
 - Async engine so the UI stays responsive
+- If Stockfish exits unexpectedly, the app safely restarts it once and retries the current position
+
+### ✨ Compact workspace
+- Home, Board, Analysis, and Settings pages in a compact desktop window with an icon-only sidebar and smoothly sliding active-page indicator
+- Custom knight startup/app icon, typed welcome, smooth page transitions, and taskbar presence when minimized
+- Settings for theme, preset or custom accent colors, image backgrounds with opacity/tint/blur/fit controls, board orientation and coordinates, engine depth/time/lines, window opacity, and always-on-top behavior
+- Resize the frameless window from its bottom-right corner; background images and appearance preferences are saved between runs
+- Preferences are saved automatically and remain compatible with existing config files
 
 ### 🎮 Modes
 
@@ -105,6 +114,10 @@ or:
 ```bat
 python main.py
 ```
+
+### Build the Windows executable
+
+Run `scripts\build_exe.bat`. The onedir build includes the custom knight icon and bundled Stockfish engine; the app is available at `dist\ChessAI_Overlay_LIVE\ChessAI_Overlay_LIVE.exe`.
 
 ### First game
 1. Chess.com → **Classic** pieces (not Neo)  

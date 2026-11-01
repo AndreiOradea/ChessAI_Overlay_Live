@@ -111,6 +111,25 @@ def test_last_move_highlights_both_squares_over_analysis(qtbot):
         assert after_color.green() > before_color.green()
 
 
+def test_analysis_arrows_animate_smoothly_and_stop_when_cleared(qtbot):
+    widget = ChessBoardWidget()
+    qtbot.addWidget(widget)
+
+    widget.set_analysis_arrows("e2e4", ["d2d4"])
+    assert widget._arrow_progress == 0
+
+    qtbot.wait(70)
+    assert 0 < widget._arrow_progress < 1
+    qtbot.wait(220)
+    assert widget._arrow_progress == 1
+    assert not widget._arrow_animation_timer.isActive()
+
+    widget.set_analysis_arrows("e2e4")
+    widget.clear_analysis()
+    assert widget._arrow_progress == 1
+    assert not widget._arrow_animation_timer.isActive()
+
+
 def test_edit_mode_allows_free_placement_without_legal_move(qtbot):
     widget = ChessBoardWidget()
     widget.resize(400, 400)

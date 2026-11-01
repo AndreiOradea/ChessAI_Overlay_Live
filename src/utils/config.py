@@ -34,6 +34,17 @@ class AppConfig:
     board_region: BoardRegion = field(default_factory=BoardRegion)
     engine: EngineSettings = field(default_factory=EngineSettings)
     opacity: float = 0.95
+    theme: str = "Midnight"
+    accent: str = "Violet"
+    custom_accent: str = ""
+    background_image: str = ""
+    background_opacity: int = 100
+    background_tint: int = 60
+    background_blur: int = 0
+    background_fit: str = "Fill"
+    show_coordinates: bool = True
+    always_on_top: bool = True
+    multipv: int = 3
     pos_x: int = 80
     pos_y: int = 80
 
@@ -52,6 +63,23 @@ def load_config() -> AppConfig:
             board_region=BoardRegion(**{**BoardRegion().__dict__, **br}),
             engine=EngineSettings(**{**EngineSettings().__dict__, **eng}),
             opacity=float(data.get("opacity", 0.95)),
+            theme=data.get("theme", "Midnight"),
+            accent=data.get("accent", "Violet"),
+            custom_accent=str(data.get("custom_accent", "")),
+            background_image=str(data.get("background_image", "")),
+            background_opacity=max(
+                0, min(100, int(data.get("background_opacity", 100)))
+            ),
+            background_tint=max(
+                0, min(100, int(data.get("background_tint", 60)))
+            ),
+            background_blur=max(
+                0, min(30, int(data.get("background_blur", 0)))
+            ),
+            background_fit=data.get("background_fit", "Fill"),
+            show_coordinates=bool(data.get("show_coordinates", True)),
+            always_on_top=bool(data.get("always_on_top", True)),
+            multipv=max(1, min(5, int(data.get("multipv", 3)))),
             pos_x=int(data.get("pos_x", 80)),
             pos_y=int(data.get("pos_y", 80)),
         )
